@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"> <!-- makes the page fit phones -->
+<title>Summarize & Translate</title>
+<style>
+  /* Colors and fonts in one place */
+  :root { --bg: #edf1f4; --panel: #fff; --ink: #17222e; --muted: #5b6b7a; --line: #cbd5de; --accent: #1f5f8b; --error: #b3392f; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--ink); font-family: system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { margin: 0 0 16px; font-family: Georgia, serif; }
+
+  /* Summarize / Translate buttons */
+  .tabs button { padding: 8px 20px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font: inherit; }
+  .tabs button.active { background: var(--accent); color: #fff; }
+
+  /* Two columns on desktop, one column on phones */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  textarea { width: 100%; height: 220px; box-sizing: border-box; padding: 10px; font: 1rem Georgia, serif; border: 1px solid var(--line); border-radius: 6px; }
+  select, .run { font: inherit; padding: 8px 12px; margin: 10px 8px 0 0; }
+  .run { background: var(--accent); color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+  .run:disabled { opacity: .5; }
+  .hidden { display: none; }  /* used to hide the options that don't belong to the current tab */
+
+  #output { min-height: 220px; font: 1.05rem/1.7 Georgia, serif; white-space: pre-wrap; }
+  #output.error { color: var(--error); }
+  #meta { color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Summarize & Translate</h1>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button id="tab-summarize" class="active">Summarize</button>
+    <button id="tab-translate">Translate</button>
+  </div>
+
+  <div class="grid">
+    <!-- Left: the user's input -->
+    <div class="panel">
+      <textarea id="input" placeholder="Paste or type text here"></textarea>
+
+      <!-- Option for the Summarize tab -->
+      <div id="opt-summarize">
+        <select id="length">
+          <option value="20,60">Short summary</option>
+          <option value="30,120" selected>Medium summary</option>
+          <option value="60,200">Long summary</option>
+        </select>
+      </div>
+
+      <!-- Options for the Translate tab (hidden at first) -->
+      <div id="opt-translate" class="hidden">
+        From <select id="src"></select>
+        To <select id="tgt"></select>
+      </div>
+
+      <button class="run" id="run">Summarize</button>
+    </div>
+
+    <!-- Right: the result from the API -->
+    <div class="panel">
+      <div id="output">Your result will appear here.</div>
+      <div id="meta"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  let mode = "summarize";  // which tab is active
+
+  // Shortcut: $("#id") finds an element on the page
+  const $ = (selector) => document.querySelector(selector);
+
+  // Switch between the Summarize and Translate tabs
+  function setMode(newMode) {
+    mode = newMode;
+    const isSummarize = mode === "summarize";
+    $("#tab-summarize").classList.toggle("active", isSummarize);
+    $("#tab-translate").classList.toggle("active", !isSummarize);
+    $("#opt-summarize").classList.toggle("hidden", !isSummarize);
+    $("#opt-translate").classList.toggle("hidden", isSummarize);
+    $("#run").textContent = isSummarize ? "Summarize" : "Translate";
+    $("#output").textContent = "Your result will appear here.";
+    $("#meta").textContent = "";
+  }
+
+  // Send JSON to the API and return the JSON reply (or throw an error)
+  async function post(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      // FastAPI sends errors as {detail: ...}; validation errors are a list
+      const detail = Array.isArray(data.detail) ? data.detail[0].msg : data.detail;
+      throw new Error(detail);
+    }
+    return data;
+  }
+
+  // Runs when the user clicks the main button
+  async function run() {
+    const text = $("#input").value.trim();
+    const output = $("#output");
+    output.className = "";
+    $("#meta").textContent = "";
+    $("#run").disabled = true;  // stop double clicks while waiting
+    output.textContent = "Working... the first request loads the model, so it can take a minute.";
+
+    try {
+      if (mode === "summarize") {
+        const [min, max] = $("#length").value.split(",").map(Number);
+        const data = await post("/api/summarize", { text, min_length: min, max_length: max });
+        output.textContent = data.summary;
+        $("#meta").textContent = data.input_words + " words in, " + data.summary_words + " words out";
+      } else {
+        const data = await post("/api/translate", { text, source_lang: $("#src").value, target_lang: $("#tgt").value });
+        output.textContent = data.translation;
+      }
+    } catch (error) {
+      output.className = "error";
+      output.textContent = error.message;
+    }
+    $("#run").disabled = false;
+  }
+
+  // Fill both language dropdowns from the API
+  async function loadLanguages() {
+    const languages = await (await fetch("/api/languages")).json();
+    for (const code in languages) {
+      $("#src").add(new Option(languages[code], code));
+      $("#tgt").add(new Option(languages[code], code));
+    }
+    $("#src").value = "en";
+    $("#tgt").value = "hi";
+  }
+
+  // Connect the buttons to the functions
+  $("#tab-summarize").onclick = () => setMode("summarize");
+  $("#tab-translate").onclick = () => setMode("translate");
+  $("#run").onclick = run;
+  loadLanguages();
+</script>
+</body>
+</html>
